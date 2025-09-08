@@ -69,7 +69,7 @@ fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnectio
 
                     let conns = connections.lock().unwrap();
                     for (other_id, mut conn) in conns.iter() {
-                        if no_mirror || other_id != &id {
+                        if !no_mirror || other_id != &id {
                             let _ = conn.write_all(msg.as_bytes());
                         }
                     }
