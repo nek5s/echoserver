@@ -3,9 +3,9 @@
 A simple TCP server utility written in rust.
 
 All packets are sent in format `{id}::{metadata}::{content}`,
-where metadata is `{playerCount}` and content is copied from the packet sent by the client.
+where metadata is `{playerCount}` (for now) and content is copied from the packet sent by the client (in my case it will be fields separated by `:`s).
 
-This project was originally create to provide a simple server utility the Hollow Knight: Silksong mod SilklessCoop.
+This project was originally create to provide a simple server utility the Hollow Knight: Silksong mod [SilklessCoop](https://www.nexusmods.com/hollowknightsilksong/mods/73).
 
 ## Installation
 
@@ -23,11 +23,11 @@ To start the server with mirroring disabled, see [Advanced Usage](#advanced-usag
 
 ## Advanced Usage
 
-Command-line usage: `echoserver PORT [--no-mirror]`
+Command-line usage: `echoserver [port] [--no-mirror]`
 
 ### Parameters:
 
-PORT: the network port to run the server on.
+port: the network port to run the server on.
 
 ### Flags:
 
