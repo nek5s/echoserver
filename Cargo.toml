@@ -1,0 +1,16 @@
+[package]
+name = "echoserver"
+version = "1.0.0"
+edition = "2024"
+authors = ["nek5"]
+description = "A simple TCP server utility."
+readme = "Readme.md"
+repository = "https://github.com/nek5s/echoserver"
+
+[dependencies]
+ctrlc = "3.5.0"
+rand = "0.9.2"
+
+[[bin]]
+name = "echoserver"
+path = "main.rs"
