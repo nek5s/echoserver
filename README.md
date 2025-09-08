@@ -7,12 +7,31 @@ where metadata is `{playerCount}` and content is copied from the packet sent by 
 
 This project was originally create to provide a simple server utility the Hollow Knight: Silksong mod SilklessCoop.
 
+## Installation
+
+Download the file fitting your operating system from the [Releases](https://github.com/nek5s/echoserver/releases) section.
+
 ## Usage
 
-`echoserver PORT [--mirror]`
+- Double-click the executable file
+- You should now see a message like `INFO:: listening on port 45565.`
+- The server is now ready to start accepting incoming connections.
 
-Flags:
---mirror: Enable sending packets back to the original sender.
+Note: this is intended for local testing of the mod, so it will send back your own data (you will see your own ghost)
+
+To start the server with mirroring disabled, see [Advanced Usage](#advanced-usage).
+
+## Advanced Usage
+
+Command-line usage: `echoserver PORT [--no-mirror]`
+
+### Parameters:
+
+PORT: the network port to run the server on.
+
+### Flags:
+
+--no-mirror: Disable sending packets back to the original sender.
 
 ## Building from source
 

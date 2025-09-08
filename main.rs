@@ -30,7 +30,7 @@ fn generate_id() -> String {
         .collect()
 }
 
-fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnections, mirror: bool, running: Arc<AtomicBool>) {
+fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnections, no_mirror: bool, running: Arc<AtomicBool>) {
     println!("INFO:: {} connected", id);
     {
         let mut conns = connections.lock().unwrap();
@@ -69,7 +69,7 @@ fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnectio
 
                     let conns = connections.lock().unwrap();
                     for (other_id, mut conn) in conns.iter() {
-                        if mirror || other_id != &id {
+                        if no_mirror || other_id != &id {
                             let _ = conn.write_all(msg.as_bytes());
                         }
                     }
@@ -95,32 +95,25 @@ fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnectio
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    let mut port: Option<u16> = None;
-    let mut mirror = false;
+    let mut port = 45565;
+    let mut no_mirror = false;
 
     for arg in &args {
-        if arg == "--mirror" {
-            mirror = true;
-        } else if port.is_none() {
-            if let Ok(p) = arg.parse::<u16>() {
-                port = Some(p);
-            }
+        if arg == "--no-mirror" {
+            no_mirror = true;
+        } else if let Ok(p) = arg.parse::<u16>() {
+            port = p;
         }
     }
 
-    if port.is_none() {
-        eprintln!("Usage: echoserver PORT [--mirror]");
-        std::process::exit(1);
-    }
-
-    let address = format!("0.0.0.0:{}", port.unwrap());
+    let address = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
 
-    if mirror {
-        println!("INFO:: listening on port {} with mirror enabled.", port.unwrap());
+    if no_mirror {
+        println!("INFO:: listening on port {} with mirror disabled.", port);
     } else {
-        println!("INFO:: listening on port {}.", port.unwrap());
+        println!("INFO:: listening on port {}.", port);
     }
 
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
@@ -140,7 +133,7 @@ fn main() -> std::io::Result<()> {
                 let id = generate_id();
                 let conns = Arc::clone(&connections);
                 let running = Arc::clone(&running);
-                thread::spawn(move || handle_client(stream, id, conns, mirror, running));
+                thread::spawn(move || handle_client(stream, id, conns, no_mirror, running));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
