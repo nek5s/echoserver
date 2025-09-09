@@ -38,3 +38,11 @@ port: the network port to run the server on.
 Run: `cargo build --release`
 
 (optionally specify your target architecture using `--target <arch><sub>-<vendor>-<sys>-<abi>`)
+
+## 📜 License
+
+This software is licensed under the Creative Commons Attribution-NonCommercial 4.0 License.
+
+**Commercial use is prohibited** without a separate license.
+
+👉 To inquire about commercial licensing, contact: nek5s.dev@gmail.com
