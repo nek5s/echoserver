@@ -14,7 +14,7 @@ Download the file fitting your operating system from the [Releases](https://gith
 ## Usage
 
 - Double-click the executable file
-- You should now see a message like `INFO:: listening on port 45565.`
+- You should now see a message like `INFO:: listening on port 45565 with the following configuration:`
 - The server is now ready to start accepting incoming connections.
 
 Note: this is intended for local testing of the mod, so it will send back your own data (you will see your own ghost)
@@ -23,11 +23,15 @@ To start the server with mirroring disabled, see [Advanced Usage](#advanced-usag
 
 ## Advanced Usage
 
-Command-line usage: `echoserver [port] [--no-mirror]`
+Command-line usage: `echoserver [port] [--no-mirror] [--max-players=x] [--messages-per-second=x]`
 
 ### Parameters:
 
 port: the network port to run the server on.
+
+--max-players: the maximum amount of players that can connect to the server at once.
+
+--messages-per-second: the maximum amount of messages each player can send per second.
 
 ### Flags:
 

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::env;
 use std::io::ErrorKind;
 use std::io::Read;
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use rand::Rng;
 
 type SharedConnections = Arc<Mutex<HashMap<String, TcpStream>>>;
@@ -30,7 +32,7 @@ fn generate_id() -> String {
         .collect()
 }
 
-fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnections, no_mirror: bool, running: Arc<AtomicBool>) {
+fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnections, no_mirror: bool, max_messages: usize, running: Arc<AtomicBool>) {
     println!("INFO:: {} connected", id);
     {
         let mut conns = connections.lock().unwrap();
@@ -42,6 +44,7 @@ fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnectio
 
     let mut buffer = [0u8; 512];
     let mut incoming_data = String::new();
+    let mut msg_times: VecDeque<Instant> = VecDeque::new();
 
     while running.load(Ordering::SeqCst) {
         match stream.read(&mut buffer) {
@@ -56,6 +59,17 @@ fn handle_client(mut stream: TcpStream, id: String, connections: SharedConnectio
                 while let Some(newline_index) = incoming_data.find('\n') {
                     let line = incoming_data[..newline_index].trim().to_string();
                     incoming_data = incoming_data[(newline_index + 1)..].to_string();
+
+                    let now = Instant::now();
+                    while let Some(&t) = msg_times.front() {
+                        if now.duration_since(t).as_secs_f64() > 1.0 {
+                            msg_times.pop_front();
+                        } else { break; }
+                    }
+
+                    if msg_times.len() >= max_messages { continue; }
+
+                    msg_times.push_back(now);
 
                     let player_count = {
                         let conns = connections.lock().unwrap();
@@ -97,12 +111,26 @@ fn main() -> std::io::Result<()> {
 
     let mut port = 45565;
     let mut no_mirror = false;
+    let mut max_players = 10;
+    let mut max_messages = 60;
 
     for arg in &args {
         if arg == "--no-mirror" {
             no_mirror = true;
         } else if let Ok(p) = arg.parse::<u16>() {
             port = p;
+        } else if arg.starts_with("--max-players=") {
+            if let Some(v) = arg.split("=").nth(1) {
+                if let Ok(n) = v.parse::<usize>() {
+                    max_players = n;
+                }
+            }
+        } else if arg.starts_with("--messages-per-second=") {
+            if let Some(v) = arg.split("=").nth(1) {
+                if let Ok(n) = v.parse::<usize>() {
+                    max_messages = n;
+                }
+            }
         }
     }
 
@@ -110,11 +138,11 @@ fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
 
-    if no_mirror {
-        println!("INFO:: listening on port {} with mirror disabled.", port);
-    } else {
-        println!("INFO:: listening on port {}.", port);
-    }
+    println!("INFO:: listening on port {} with the following configuration:", port);
+    println!("INFO:: mirror                  ={}", if no_mirror { "disabled" } else { "enabled" });
+    println!("INFO:: max players             ={}", max_players);
+    println!("INFO:: max messages per second ={}", max_messages);
+    println!();
 
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
     let running = Arc::new(AtomicBool::new(true));
@@ -130,10 +158,19 @@ fn main() -> std::io::Result<()> {
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _addr)) => {
+                let conns1 = connections.lock().unwrap();
+                
+                if conns1.len() >= max_players {
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    continue;
+                }
+                drop(conns1);
+
                 let id = generate_id();
-                let conns = Arc::clone(&connections);
                 let running = Arc::clone(&running);
-                thread::spawn(move || handle_client(stream, id, conns, no_mirror, running));
+                let conns = Arc::clone(&connections);
+
+                thread::spawn(move || handle_client(stream, id, conns, no_mirror, max_messages, running));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
