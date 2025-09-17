@@ -20,33 +20,24 @@ type SharedConnections = Arc<Mutex<HashMap<String, TcpStream>>>;
 #[derive(Clone, Copy)]
 struct ServerConfig {
     port: i32,
-    no_mirror: bool,
+    mirror: bool,
     max_players: i32,
-    max_rate: i32
+    max_rate: i32,
+    debug_print: bool
 }
 
 // xxxx-xxxx
 fn generate_id() -> String {
     let mut rng = rand::rng();
-    (0..8)
-        .map(|i| {
-            if i == 4 {
-                '-'
-            } else {
-                let n = rng.random_range(0..16);
-                std::char::from_digit(n, 16).unwrap()
-            }
-        })
-        .collect()
+    
+    return (0..8).map(|i| {
+        if i == 4 { '-' }
+        else { std::char::from_digit(rng.random_range(0..16), 16).unwrap() }
+    }).collect();
 }
 
 fn handle_client(mut stream: TcpStream, mut id: String, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
     println!("INFO:: {} connected", id);
-
-    {
-        let mut conns = connections.lock().unwrap();
-        conns.insert(id.clone(), stream.try_clone().unwrap());
-    }
 
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
@@ -87,15 +78,17 @@ fn handle_client(mut stream: TcpStream, mut id: String, connections: SharedConne
                     id = new_id;
                 }
                 if key == 2 { // leave
-                    println!("INFO:: {} left.", id);
+                    break;
                 }
 
-                println!("INFO:: Broadcasting packet with key {} for id {}", key, id);
+                if config.debug_print {
+                    println!("INFO:: Broadcasting packet with key {} for id {}", key, id);
+                }
 
                 // broadcast
                 let conns = connections.lock().unwrap();
                 for (other_id, mut conn) in conns.iter() {
-                    if other_id != &id || !config.no_mirror {
+                    if other_id != &id || config.mirror {
                         let _ = conn.write_all(&buffer[0..size as usize]);
                     }
                 }
@@ -115,10 +108,12 @@ fn handle_client(mut stream: TcpStream, mut id: String, connections: SharedConne
     }
 
     {
+        println!("INFO:: Broadcasting leave packet for id {}", id);
+
         let mut leave_msg = [0u8; 69];
-        leave_msg[0..4].copy_from_slice(&(69 as i32).to_le_bytes());
-        leave_msg[5] = 2;
-        leave_msg[6..69].copy_from_slice(id.as_bytes());
+        leave_msg[0..4].copy_from_slice(&(5 as i32).to_le_bytes());
+        leave_msg[4] = 2;
+        leave_msg[5..69].copy_from_slice(id.as_bytes());
         
         let conns = connections.lock().unwrap();
         for (_, mut conn) in conns.iter() {
@@ -130,11 +125,13 @@ fn handle_client(mut stream: TcpStream, mut id: String, connections: SharedConne
 }
 
 fn main() {
-    let mut config = ServerConfig { port: 45565, no_mirror: false, max_players: 10, max_rate: 60 };
+    let mut config = ServerConfig { port: 45565, mirror: true, max_players: 10, max_rate: 60, debug_print: false };
     let args: Vec<String> = env::args().skip(1).collect();
     for arg in &args {
         if arg == "--no-mirror" {
-            config.no_mirror = true;
+            config.mirror = false;
+        } else if arg == "--debug" {
+            config.debug_print = true;
         } else if let Ok(p) = arg.parse::<i32>() {
             config.port = p;
         } else if arg.starts_with("--max-players=") {
@@ -157,9 +154,10 @@ fn main() {
     listener.set_nonblocking(true).unwrap();
 
     println!("INFO:: listening on port {} with the following configuration:", config.port);
-    println!("INFO:: mirror           = {}", if config.no_mirror { "disabled" } else { "enabled" });
+    println!("INFO:: mirror           = {}", if config.mirror { "enabled" } else { "disabled" });
     println!("INFO:: max players      = {}", config.max_players);
     println!("INFO:: max message rate = {}", config.max_rate);
+    println!("INFO:: debug logging    = {}", if config.debug_print { "enabled" } else { "disabled" });
     println!();
 
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
