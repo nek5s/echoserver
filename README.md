@@ -4,6 +4,10 @@ A simple TCP server utility written in rust.
 
 This project was originally create to provide a simple server utility the Hollow Knight: Silksong mod [SilklessCoop](https://www.nexusmods.com/hollowknightsilksong/mods/73).
 
+Host this server with 30% off using affiliate code SILKLESS:
+
+[![Nodecraft banner](./Media/nodecraft.jpg)](https://nodecraft.com/r/silkless)
+
 ## Installation
 
 Download the file fitting your operating system from the [Releases](https://github.com/nek5s/echoserver/releases) section.
@@ -13,8 +17,6 @@ Download the file fitting your operating system from the [Releases](https://gith
 - Double-click the executable file
 - You should now see a message like `INFO:: listening on port 45565 with the following configuration:`
 - The server is now ready to start accepting incoming connections.
-
-Note: this is intended for local testing of the mod, so it will send back your own data (you will see your own ghost)
 
 To start the server with mirroring disabled, see [Advanced Usage](#advanced-usage).
 
@@ -38,19 +40,7 @@ port: the network port to run the server on.
 
 ## Packet structure
 
-All packets must follow this schema:
-
-- Size of packet (in bytes) stored in the first 4 bytes
-- Key of packet (= packet type) stored in the 5th byte
-  - Key=1 for join, followed by 64 bytes of id string and 64 bytes of version string
-  - Key=2 for leave
-- Content of packet stored in the remaining bytes (size - 5)
-
-The server will keep track of connections using generated ids, that can be replaced by sending a Key=1 packet.
-
-The server will share all received packets to all other connections (including the original sender if mirror is enabled).
-
-The server will also broadcast a Key=2 packet once a connection closes.
+All packets must have the total packet size in bytes prepended as a 32bit integer.
 
 ## Building from source
 

@@ -15,7 +15,7 @@ use std::time::Duration;
 use std::time::Instant;
 use rand::Rng;
 
-type SharedConnections = Arc<Mutex<HashMap<String, TcpStream>>>;
+type SharedConnections = Arc<Mutex<HashMap<i32, TcpStream>>>;
 
 #[derive(Clone, Copy)]
 struct ServerConfig {
@@ -26,105 +26,7 @@ struct ServerConfig {
     debug_print: bool
 }
 
-// xxxx-xxxx
-fn generate_id() -> String {
-    let mut rng = rand::rng();
-    
-    return (0..8).map(|i| {
-        if i == 4 { '-' }
-        else { std::char::from_digit(rng.random_range(0..16), 16).unwrap() }
-    }).collect();
-}
-
-fn handle_client(mut stream: TcpStream, mut id: String, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
-    println!("INFO:: {} connected", id);
-
-    let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-
-    let mut buffer = [0u8; 512];
-    let mut msg_times = VecDeque::<Instant>::new();
-
-    while running.load(Ordering::SeqCst) {
-        match stream.read(&mut buffer) {
-            Ok(0) => { break; },
-            Ok(n) => {
-                if n <= 0 { continue; }
-
-                // throttle
-                let now = Instant::now();
-                while let Some(&t) = msg_times.front() {
-                    if now.duration_since(t).as_secs_f64() > 1.0 {
-                        msg_times.pop_front();
-                    } else { break; }
-                }
-                if msg_times.len() as i32 >= config.max_rate { continue; }
-                msg_times.push_back(now);
-
-                // read data
-                let size = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
-                let key = buffer[4];
-                let content = &buffer[5..size as usize];
-
-                // handle join and leave
-                if key == 1 { // join                    
-                    let new_id = String::from_utf8_lossy(&content[0..64]).trim().to_string();
-
-                    println!("INFO:: {} changed id to {}.", id, new_id);
-
-                    connections.lock().unwrap().remove(&id);
-                    connections.lock().unwrap().insert(new_id.clone(), stream.try_clone().unwrap());
-
-                    id = new_id;
-                }
-                if key == 2 { // leave
-                    break;
-                }
-
-                if config.debug_print {
-                    println!("INFO:: Broadcasting packet with key {} for id {}", key, id);
-                }
-
-                // broadcast
-                let conns = connections.lock().unwrap();
-                for (other_id, mut conn) in conns.iter() {
-                    if other_id != &id || config.mirror {
-                        let _ = conn.write_all(&buffer[0..size as usize]);
-                    }
-                }
-            },
-            Err(e) => {
-                if e.kind() != ErrorKind::WouldBlock && e.kind() != ErrorKind::TimedOut {
-                    eprintln!("ERROR:: Connection error: {}", e);
-                    break;
-                }
-            }
-        }
-    }
-
-    {
-        let mut conns = connections.lock().unwrap();
-        conns.remove(&id);
-    }
-
-    {
-        println!("INFO:: Broadcasting leave packet for id {}", id);
-
-        let mut leave_msg = [0u8; 69];
-        leave_msg[0..4].copy_from_slice(&(5 as i32).to_le_bytes());
-        leave_msg[4] = 2;
-        leave_msg[5..69].copy_from_slice(id.as_bytes());
-        
-        let conns = connections.lock().unwrap();
-        for (_, mut conn) in conns.iter() {
-            let _ = conn.write_all(&leave_msg);
-        }
-    }
-
-    println!("INFO:: {} disconnected", id);
-}
-
-fn main() {
+fn read_config() -> ServerConfig {
     let mut config = ServerConfig { port: 45565, mirror: true, max_players: 10, max_rate: 60, debug_print: false };
     let args: Vec<String> = env::args().skip(1).collect();
     for arg in &args {
@@ -148,6 +50,72 @@ fn main() {
             }
         }
     }
+
+    return config;
+}
+
+fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
+    let id = rand::rng().random_range(0..16384);
+
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+
+    {
+        connections.lock().unwrap().insert(id, stream.try_clone().unwrap());
+        println!("INFO:: {} connected", id);
+    }
+
+    let mut buffer = [0u8; 512];
+    let mut msg_times = VecDeque::<Instant>::new();
+
+    while running.load(Ordering::SeqCst) {
+        match stream.read(&mut buffer) {
+            Ok(0) => { break; },
+            Ok(n) => {
+                if n <= 0 { continue; }
+
+                // throttle
+                let now = Instant::now();
+                while let Some(&t) = msg_times.front() {
+                    if now.duration_since(t).as_secs_f64() > 1.0 {
+                        msg_times.pop_front();
+                    } else { break; }
+                }
+                if msg_times.len() as i32 >= config.max_rate { continue; }
+                msg_times.push_back(now);
+
+                // read data
+                let size = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+
+                if config.debug_print {
+                    println!("INFO:: Broadcasting packet of size {} for id {}", size, id);
+                }
+
+                // broadcast
+                let conns = connections.lock().unwrap();
+                for (other_id, mut conn) in conns.iter() {
+                    if other_id != &id || config.mirror {
+                        let _ = conn.write_all(&buffer[0..size as usize]);
+                    }
+                }
+            },
+            Err(e) => {
+                if e.kind() != ErrorKind::WouldBlock && e.kind() != ErrorKind::TimedOut {
+                    eprintln!("ERROR:: Connection error: {}", e);
+                    break;
+                }
+            }
+        }
+    }
+
+    {
+        connections.lock().unwrap().remove(&id);
+        println!("INFO:: {} disconnected", id);
+    }
+}
+
+fn main() {
+    let config = read_config();
 
     let address = format!("0.0.0.0:{}", config.port);
     let listener = TcpListener::bind(address).unwrap();
@@ -176,11 +144,10 @@ fn main() {
             Ok((stream, _addr)) => {
                 if connections.lock().unwrap().len() as i32 >= config.max_players { continue; }
 
-                let tmp_id = generate_id();
                 let running = Arc::clone(&running);
                 let conns = Arc::clone(&connections);
 
-                thread::spawn(move || handle_client(stream, tmp_id, conns, config, running));
+                thread::spawn(move || handle_client(stream, conns, config, running));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
