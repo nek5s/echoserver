@@ -55,14 +55,43 @@ fn read_config() -> ServerConfig {
 }
 
 fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
-    let id = rand::rng().random_range(0..16384);
+    let id = { // roll id
+        let mut _id = 0;
+
+        let conns = match connections.lock() {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ERROR:: Could not lock connections, closing thread!");
+                return;
+            }
+        };
+
+        while _id == 0 || conns.contains_key(&_id) { _id = rand::rng().random_range(10000..16384); }
+        _id
+    };
 
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
 
-    {
-        connections.lock().unwrap().insert(id, stream.try_clone().unwrap());
-        println!("INFO:: {} connected", id);
+    { // add to connections
+        let mut _connections = match connections.lock() {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ERROR:: Could not lock connections, closing thread!");
+                return;
+            }
+        };
+
+        let mut _stream = match stream.try_clone() {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("ERROR:: Could not clone stream, closing thread!");
+                return;
+            }
+        };
+
+        _connections.insert(id, _stream);
+        println!("INFO:: {} - Joined.", id);
     }
 
     let mut buffer = [0u8; 512];
@@ -72,45 +101,77 @@ fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: 
         match stream.read(&mut buffer) {
             Ok(0) => { break; },
             Ok(n) => {
-                if n <= 0 { continue; }
+                if n < 4 { continue; }
 
                 // throttle
                 let now = Instant::now();
+                msg_times.push_back(now);
+
                 while let Some(&t) = msg_times.front() {
                     if now.duration_since(t).as_secs_f64() > 1.0 {
                         msg_times.pop_front();
                     } else { break; }
                 }
+
                 if msg_times.len() as i32 >= config.max_rate { continue; }
-                msg_times.push_back(now);
 
-                // read data
-                let size = u32::from_le_bytes(buffer[0..4].try_into().unwrap());
+                let size = { // read size
+                    let size_bytes: [u8; 4] = match buffer[0..4].try_into() {
+                        Ok(b) => b,
+                        Err(_) => {
+                            eprintln!("ERROR:: {} - Could not read size bytes, closing thread!", id);
+                            break;
+                        }
+                    };
 
-                if config.debug_print {
-                    println!("INFO:: Broadcasting packet of size {} for id {}", size, id);
+                    i32::from_le_bytes(size_bytes)
+                };
+
+                if size >= buffer.len() as i32 {
+                    eprintln!("ERROR:: {} - Packet too large, closing connection, closing thread!", id);
+                    break;
                 }
 
-                // broadcast
-                let conns = connections.lock().unwrap();
-                for (other_id, mut conn) in conns.iter() {
-                    if other_id != &id || config.mirror {
-                        let _ = conn.write_all(&buffer[0..size as usize]);
+                if config.debug_print {
+                    println!("INFO:: {} - Broadcasting packet of size {}.", id, size);
+                }
+
+                { // broadcast
+                    let _connections = match connections.lock() {
+                        Ok(c) => c,
+                        Err(_) => {
+                            eprintln!("ERROR:: Could not lock connections, closing thread!");
+                            break;
+                        }
+                    };
+    
+                    for (other_id, mut conn) in _connections.iter() {
+                        if other_id != &id || config.mirror {
+                            let _ = conn.write_all(&buffer[0..size as usize]);
+                        }
                     }
                 }
             },
             Err(e) => {
                 if e.kind() != ErrorKind::WouldBlock && e.kind() != ErrorKind::TimedOut {
-                    eprintln!("ERROR:: Connection error: {}", e);
+                    eprintln!("ERROR:: {} - Encountered error: {}, closing thread!", id, e);
                     break;
                 }
             }
         }
     }
 
-    {
-        connections.lock().unwrap().remove(&id);
-        println!("INFO:: {} disconnected", id);
+    { // remove from connections
+        let mut _connections = match connections.lock() {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ERROR:: Could not lock connections, closing thread!");
+                return;
+            }
+        };
+
+        _connections.remove(&id);
+        println!("INFO:: {} - Disconnected.", id);
     }
 }
 
@@ -118,23 +179,30 @@ fn main() {
     let config = read_config();
 
     let address = format!("0.0.0.0:{}", config.port);
-    let listener = TcpListener::bind(address).unwrap();
-    listener.set_nonblocking(true).unwrap();
+    let listener = match TcpListener::bind(address) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("ERROR:: Could not bind listener, exiting!");
+            return;
+        }
+    };
 
-    println!("INFO:: listening on port {} with the following configuration:", config.port);
-    println!("INFO:: mirror           = {}", if config.mirror { "enabled" } else { "disabled" });
-    println!("INFO:: max players      = {}", config.max_players);
-    println!("INFO:: max message rate = {}", config.max_rate);
-    println!("INFO:: debug logging    = {}", if config.debug_print { "enabled" } else { "disabled" });
+    let _ = listener.set_nonblocking(true);
+
+    println!("INFO:: Listening on port {} with the following configuration:", config.port);
+    println!("INFO:: Mirror           = {}", if config.mirror { "enabled" } else { "disabled" });
+    println!("INFO:: Max players      = {}", config.max_players);
+    println!("INFO:: Max message rate = {}", config.max_rate);
+    println!("INFO:: Debug logging    = {}", if config.debug_print { "enabled" } else { "disabled" });
     println!();
 
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
     let running = Arc::new(AtomicBool::new(true));
 
-    {
+    { // setup ctrl+c listener
         let running = Arc::clone(&running);
         ctrlc::set_handler(move || {
-            println!("\nINFO:: Shutdown signal received.");
+            println!("\nINFO:: Shutdown signal received, exiting.");
             running.store(false, Ordering::SeqCst);
         }).expect("ERROR:: Failed to set Ctrl+C handler");
     }
@@ -142,29 +210,47 @@ fn main() {
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _addr)) => {
-                if connections.lock().unwrap().len() as i32 >= config.max_players { continue; }
+                let _connections = match connections.lock() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        eprintln!("ERROR:: Could not lock connections, exiting!");
+                        break;
+                    }
+                };
 
-                let running = Arc::clone(&running);
-                let conns = Arc::clone(&connections);
+                if _connections.len() as i32 >= config.max_players { continue; }
 
-                thread::spawn(move || handle_client(stream, conns, config, running));
+                let running_clone = Arc::clone(&running);
+                let connections_clone = Arc::clone(&connections);
+
+                thread::spawn(move || handle_client(stream, connections_clone, config, running_clone));
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
             Err(e) => {
-                eprintln!("ERROR:: Connection error: {}", e);
+                eprintln!("ERROR:: Encountered error {}, exiting!", e);
+                break;
             }
         }
     }
 
-    println!("INFO:: Server shutting down. Closing all connections...");
-    let conns = connections.lock().unwrap();
-    for (id, conn) in conns.iter() {
-        let _ = conn.shutdown(std::net::Shutdown::Both);
-        println!("INFO:: Closed connection for {}", id);
-    }
+    { // shut down
+        println!("INFO:: Server shutting down. Closing all connections...");
 
-    println!("INFO:: Shutdown complete.");
+        let _connections = match connections.lock() {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("ERROR:: Could not lock connections, exiting!");
+                return;
+            }
+        };
+
+        for (_, conn) in _connections.iter() {
+            let _ = conn.shutdown(std::net::Shutdown::Both);
+        }
+
+        println!("INFO:: Shutdown complete.");
+    }
 }
