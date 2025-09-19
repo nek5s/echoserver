@@ -6,7 +6,7 @@ This project was originally create to provide a simple server utility the Hollow
 
 Host this server with 30% off using affiliate code SILKLESS:
 
-[![Nodecraft banner](./Media/nodecraft.jpg)](https://nodecraft.com/r/silkless)
+[![Nodecraft banner](./nodecraft.jpg)](https://nodecraft.com/r/silkless)
 
 ## Installation
 
