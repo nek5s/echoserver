@@ -54,7 +54,7 @@ fn read_config() -> ServerConfig {
     return config;
 }
 
-fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
+fn handle_client(stream: TcpStream, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
     let id = { // roll id
         let mut _id = 0;
 
@@ -94,68 +94,87 @@ fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: 
         println!("INFO:: {} - Joined.", id);
     }
 
-    let mut buffer = [0u8; 512];
     let mut msg_times = VecDeque::<Instant>::new();
 
-    while running.load(Ordering::SeqCst) {
-        match stream.read(&mut buffer) {
-            Ok(0) => { break; },
-            Ok(n) => {
-                if n < 4 { continue; }
+    loop {
+        // read size
+        let mut size_bytes = [0u8; 4];
+        match read_bytes(&stream, &mut size_bytes, 4, &running) {
+            Ok(_) => { },
+            Err(e) => match e {
+                Some(e) => {
+                    eprintln!("ERROR:: {} - Encountered error {}, closing thread!", id, e);
+                    break;
+                },
+                None => { }
+            }
+        };
+        
+        let size_bytes_4: [u8; 4] = match size_bytes.try_into() {
+            Ok(b) => b,
+            Err(_) => {
+                eprintln!("ERROR:: {} - Failed to convert size bytes, closing thread!", id);
+                break;
+            }
+        };
+        
+        let size = i32::from_le_bytes(size_bytes_4);
 
-                // throttle
-                let now = Instant::now();
-                msg_times.push_back(now);
+        if size > 512 {
+            eprintln!("ERROR:: {} - Packet too large ({}), closing thread!", id, size);
+            break;
+        }
 
-                while let Some(&t) = msg_times.front() {
-                    if now.duration_since(t).as_secs_f64() > 1.0 {
-                        msg_times.pop_front();
-                    } else { break; }
-                }
+        if size < 4 {
+            eprintln!("ERROR:: {} - Packet too small ({}), closing thread!", id, size);
+            break;
+        }
 
-                if msg_times.len() as i32 >= config.max_rate { continue; }
+        // read content
+        let content_size = (size - 4) as usize;
 
-                let size = { // read size
-                    let size_bytes: [u8; 4] = match buffer[0..4].try_into() {
-                        Ok(b) => b,
-                        Err(_) => {
-                            eprintln!("ERROR:: {} - Could not read size bytes, closing thread!", id);
-                            break;
-                        }
-                    };
+        let mut content_bytes = vec![0u8; content_size];
+        match read_bytes(&stream, &mut content_bytes, content_size, &running) {
+            Ok(_) => { },
+            Err(e) => match e {
+                Some(e) => {
+                    eprintln!("ERROR:: {} - Encountered error {}, closing thread!", id, e);
+                    break;
+                },
+                None => { }
+            }
+        };
 
-                    i32::from_le_bytes(size_bytes)
-                };
+        { // throttle
+            let now = Instant::now();
 
-                if size >= buffer.len() as i32 {
-                    eprintln!("ERROR:: {} - Packet too large, closing connection, closing thread!", id);
+            while let Some(&t) = msg_times.front() {
+                if now.duration_since(t).as_secs_f64() > 1.0 {
+                    msg_times.pop_front();
+                } else { break; }
+            }
+
+            if msg_times.len() as i32 >= config.max_rate { continue; }
+            msg_times.push_back(now);
+        }
+
+        { // broadcast
+            if config.debug_print {
+                println!("INFO:: {} - Broadcasting packet of size {}.", id, size);
+            }
+
+            let _connections = match connections.lock() {
+                Ok(c) => c,
+                Err(_) => {
+                    eprintln!("ERROR:: Could not lock connections, closing thread!");
                     break;
                 }
+            };
 
-                if config.debug_print {
-                    println!("INFO:: {} - Broadcasting packet of size {}.", id, size);
-                }
-
-                { // broadcast
-                    let _connections = match connections.lock() {
-                        Ok(c) => c,
-                        Err(_) => {
-                            eprintln!("ERROR:: Could not lock connections, closing thread!");
-                            break;
-                        }
-                    };
-    
-                    for (other_id, mut conn) in _connections.iter() {
-                        if other_id != &id || config.mirror {
-                            let _ = conn.write_all(&buffer[0..size as usize]);
-                        }
-                    }
-                }
-            },
-            Err(e) => {
-                if e.kind() != ErrorKind::WouldBlock && e.kind() != ErrorKind::TimedOut {
-                    eprintln!("ERROR:: {} - Encountered error: {}, closing thread!", id, e);
-                    break;
+            for (other_id, mut conn) in _connections.iter() {
+                if other_id != &id || config.mirror {
+                    conn.write_all(&size_bytes).expect("could not send size");
+                    conn.write_all(&content_bytes).expect("could not send content");
                 }
             }
         }
@@ -173,6 +192,36 @@ fn handle_client(mut stream: TcpStream, connections: SharedConnections, config: 
         _connections.remove(&id);
         println!("INFO:: {} - Disconnected.", id);
     }
+}
+
+fn read_bytes(mut stream: &TcpStream, buffer: &mut [u8], length: usize, running: &Arc<AtomicBool>) -> Result<(), Option<std::io::Error>> {
+    let mut read = 0;
+
+    while read < length {
+        if !running.load(Ordering::SeqCst) { return Err(None); }
+
+        let mut buf = vec![0u8; length - read];
+
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                return Err(None);
+            },
+            Ok(n) => {
+                buffer[read..(read + n)].clone_from_slice(&buf[0..n]);
+                read += n;
+            },
+            Err(e) => {
+                if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+
+                return Err(Some(e));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn main() {
