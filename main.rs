@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::env;
+use std::fs::File;
+use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -13,7 +16,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+use rand::random_range;
 use rand::Rng;
+use regex::Regex;
 
 type SharedConnections = Arc<Mutex<HashMap<i32, TcpStream>>>;
 
@@ -26,9 +31,9 @@ struct ServerConfig {
     debug_print: bool
 }
 
-fn read_config() -> ServerConfig {
-    let mut config = ServerConfig { port: 45565, mirror: true, max_players: 10, max_rate: 60, debug_print: false };
+fn read_config_from_args(config: &mut ServerConfig) {
     let args: Vec<String> = env::args().skip(1).collect();
+
     for arg in &args {
         if arg == "--no-mirror" {
             config.mirror = false;
@@ -50,8 +55,99 @@ fn read_config() -> ServerConfig {
             }
         }
     }
+}
 
-    return config;
+fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
+    if !path.exists() { return; }
+    
+    // read file
+    let config_file = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => {
+            eprintln!("WARNING:: Could not read config file!");
+            return;
+        }
+    };
+    let mut content = String::new();
+    match BufReader::new(config_file).read_to_string(&mut content) {
+        Ok(_) => {},
+        Err(_) => {
+            eprintln!("ERROR:: Could not read config file!");
+            return;
+        }
+    };
+
+    // read port
+    let regex_port = match Regex::new(r"^port\s*=\s*(\d+)\s*$") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR:: Could not create regex!");
+            return;
+        }
+    };
+    if let Some(c) = regex_port.captures(&content) {
+        if let Some(v) = c.get(1) {
+            if let Ok(i) = v.as_str().parse::<i32>() {
+                config.port = i;
+            }
+        }
+    }
+    // read mirror
+    let regex_mirror = match Regex::new(r"^mirror\s*=\s*(true|false)\s*$") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR:: Could not create regex!");
+            return;
+        }
+    };
+    if let Some(c) = regex_mirror.captures(&content) {
+        if let Some(v) = c.get(1) {
+            config.mirror = v.as_str() == "true";
+        }
+    }
+    // read max players
+    let regex_players = match Regex::new(r"^max_players\s*=\s*(\d+)\s*$") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR:: Could not create regex!");
+            return;
+        }
+    };
+    if let Some(c) = regex_players.captures(&content) {
+        if let Some(v) = c.get(1) {
+            if let Ok(i) = v.as_str().parse::<i32>() {
+                config.max_players = i;
+            }
+        }
+    }
+    // read max rate
+    let regex_rate = match Regex::new(r"^max_rate\s*=\s*(\d+)\s*$") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR:: Could not create regex!");
+            return;
+        }
+    };
+    if let Some(c) = regex_rate.captures(&content) {
+        if let Some(v) = c.get(1) {
+            if let Ok(i) = v.as_str().parse::<i32>() {
+                config.max_rate = i;
+            }
+        }
+    }
+    // read debug print
+    let regex_debug = match Regex::new(r"^debug_print\s*=\s*(true|false)\s*$") {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("ERROR:: Could not create regex!");
+            return;
+        }
+    };
+    if let Some(c) = regex_debug.captures(&content) {
+        if let Some(v) = c.get(1) {
+            config.debug_print = v.as_str() == "true";
+        }
+    }
 }
 
 fn handle_client(stream: TcpStream, connections: SharedConnections, config: ServerConfig, running: Arc<AtomicBool>) {
@@ -71,7 +167,7 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
     };
 
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(5000)));
 
     { // add to connections
         let mut _connections = match connections.lock() {
@@ -94,7 +190,8 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
         println!("INFO:: {} - Joined.", id);
     }
 
-    let mut msg_times = VecDeque::<Instant>::new();
+    let mut msg_times = VecDeque::<(Instant, i32)>::new();
+    let mut msg_sum = 0;
 
     loop {
         // read size
@@ -148,14 +245,19 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
         { // throttle
             let now = Instant::now();
 
-            while let Some(&t) = msg_times.front() {
-                if now.duration_since(t).as_secs_f64() > 1.0 {
+            while let Some((t, n)) = msg_times.front() {
+                if now.duration_since(t.clone()).as_secs_f64() > 1.0 {
+                    msg_sum -= n;
                     msg_times.pop_front();
                 } else { break; }
             }
+            if msg_sum >= config.max_rate { continue; }
+            msg_sum += size;
+            msg_times.push_back((now, size));
 
-            if msg_times.len() as i32 >= config.max_rate { continue; }
-            msg_times.push_back(now);
+            if random_range(1..30) == 1 {
+                println!("{}", msg_sum);
+            }
         }
 
         { // broadcast
@@ -173,8 +275,8 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
 
             for (other_id, mut conn) in _connections.iter() {
                 if other_id != &id || config.mirror {
-                    conn.write_all(&size_bytes).expect("could not send size");
-                    conn.write_all(&content_bytes).expect("could not send content");
+                    let _ = conn.write_all(&size_bytes);
+                    let _ = conn.write_all(&content_bytes);
                 }
             }
         }
@@ -212,7 +314,6 @@ fn read_bytes(mut stream: &TcpStream, buffer: &mut [u8], length: usize, running:
             },
             Err(e) => {
                 if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut {
-                    thread::sleep(Duration::from_millis(100));
                     continue;
                 }
 
@@ -225,7 +326,14 @@ fn read_bytes(mut stream: &TcpStream, buffer: &mut [u8], length: usize, running:
 }
 
 fn main() {
-    let config = read_config();
+    let config = {
+        let mut config = ServerConfig { port: 45565, mirror: true, max_players: 10, max_rate: 8000, debug_print: false};
+        
+        read_config_from_file(Path::new("config.yaml"), &mut config);
+        read_config_from_args(&mut config);
+
+        config
+    };
 
     let address = format!("0.0.0.0:{}", config.port);
     let listener = match TcpListener::bind(address) {
@@ -238,25 +346,34 @@ fn main() {
 
     let _ = listener.set_nonblocking(true);
 
+    // print config
     println!("INFO:: Listening on port {} with the following configuration:", config.port);
-    println!("INFO:: Mirror           = {}", if config.mirror { "enabled" } else { "disabled" });
-    println!("INFO:: Max players      = {}", config.max_players);
-    println!("INFO:: Max message rate = {}", config.max_rate);
-    println!("INFO:: Debug logging    = {}", if config.debug_print { "enabled" } else { "disabled" });
+    println!("INFO:: Mirror        = {}", if config.mirror { "enabled" } else { "disabled" });
+    println!("INFO:: Max players   = {}", config.max_players);
+    println!("INFO:: Max byte rate = {}", config.max_rate);
+    println!("INFO:: Debug logging = {}", if config.debug_print { "enabled" } else { "disabled" });
     println!();
 
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
     let running = Arc::new(AtomicBool::new(true));
 
+    let mut ready = true;
+
     { // setup ctrl+c listener
         let running = Arc::clone(&running);
-        ctrlc::set_handler(move || {
+        match ctrlc::set_handler(move || {
             println!("\nINFO:: Shutdown signal received, exiting.");
             running.store(false, Ordering::SeqCst);
-        }).expect("ERROR:: Failed to set Ctrl+C handler");
+        }) {
+            Ok(_) => {},
+            Err(_) => {
+                eprintln!("ERROR:: Could not register ctrlc listener, exiting!");
+                ready = false;
+            },
+        }
     }
 
-    while running.load(Ordering::SeqCst) {
+    while ready && running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _addr)) => {
                 let _connections = match connections.lock() {

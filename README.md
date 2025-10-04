@@ -20,23 +20,19 @@ Download the file fitting your operating system from the [Releases](https://gith
 
 To start the server with mirroring disabled, see [Advanced Usage](#advanced-usage).
 
-## Advanced Usage
+## Configuration
 
-Command-line usage: `echoserver [port] [--no-mirror] [--debug] [--max-players=x] [--max-rate=x]`
+The following parameters can be set in a `config.yaml` file or via command line arguments
 
 ### Parameters:
 
-port: the network port to run the server on.
-
---max-players: the maximum amount of players that can connect to the server at once.
-
---max-rate: the maximum amount of messages each player can send per second.
-
-### Flags:
-
---no-mirror: Disable sending packets back to the original sender.
-
---debug: Enable additional printing for debugging.
+|Parameter Name         |Config File Name   |Argument Name      |Description                                                        |Default Value  |
+|-                      |-                  |-                  |-                                                                  |-              |
+|Port                   |port               |--port=x           |Port the server will run on                                        |45565          |
+|Mirror Mode            |mirror             |--no-mirror        |Toggle sending back player data to original sender (= ghost)       |true           |
+|Max Player Count       |max_players        |--max_players=x    |Set the maximum amount of players that can connect at once         |10             |
+|Max Data Rate          |max_rate           |--max_rate=x       |Set the maximum amount of bytes each player can send per second    |8000           |
+|Enable Debug Printing  |debug_print        |--debug            |Enable debug printing, only really useful for mod testing          |false          |
 
 ## Packet structure
 

@@ -1,0 +1,24 @@
+# Set port to run the server on
+# Allowed values: number
+# Default value: 45565
+port = 45565
+
+# Toggle Mirror (sending your own data back to you = ghost)
+# Allowed values: true, false
+# Default value: true
+mirror = true
+
+# Set maximum allowed amount of players that can connect at once
+# Allowed values: number
+# Default value: 10
+max_players = 10
+
+# Set maximum byte rate per player (amount of data sent)
+# Allowed values: number
+# Default value: 8000 (SilklessCoopVisual needs around 4000 with tickrate=20)
+max_rate = 8000
+
+# Enable debug printing
+# Allowed values: true, false
+# Default value: false
+debug_print = false
