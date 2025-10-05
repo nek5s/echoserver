@@ -16,11 +16,12 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use rand::random_range;
 use rand::Rng;
 use regex::Regex;
 
 type SharedConnections = Arc<Mutex<HashMap<i32, TcpStream>>>;
+
+const BUFFER_SIZE: usize = 2048;
 
 #[derive(Clone, Copy)]
 struct ServerConfig {
@@ -78,7 +79,7 @@ fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
     };
 
     // read port
-    let regex_port = match Regex::new(r"^port\s*=\s*(\d+)\s*$") {
+    let regex_port = match Regex::new(r"port\s*=\s*(\d+)") {
         Ok(r) => r,
         Err(_) => {
             eprintln!("ERROR:: Could not create regex!");
@@ -92,8 +93,8 @@ fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
             }
         }
     }
-    // read mirror
-    let regex_mirror = match Regex::new(r"^mirror\s*=\s*(true|false)\s*$") {
+    // read mirrorv
+    let regex_mirror = match Regex::new(r"mirror\s*=\s*(true|false)") {
         Ok(r) => r,
         Err(_) => {
             eprintln!("ERROR:: Could not create regex!");
@@ -106,7 +107,7 @@ fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
         }
     }
     // read max players
-    let regex_players = match Regex::new(r"^max_players\s*=\s*(\d+)\s*$") {
+    let regex_players = match Regex::new(r"max_players\s*=\s*(\d+)") {
         Ok(r) => r,
         Err(_) => {
             eprintln!("ERROR:: Could not create regex!");
@@ -121,7 +122,7 @@ fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
         }
     }
     // read max rate
-    let regex_rate = match Regex::new(r"^max_rate\s*=\s*(\d+)\s*$") {
+    let regex_rate = match Regex::new(r"max_rate\s*=\s*(\d+)") {
         Ok(r) => r,
         Err(_) => {
             eprintln!("ERROR:: Could not create regex!");
@@ -136,7 +137,7 @@ fn read_config_from_file(path: &Path, config: &mut ServerConfig) {
         }
     }
     // read debug print
-    let regex_debug = match Regex::new(r"^debug_print\s*=\s*(true|false)\s*$") {
+    let regex_debug = match Regex::new(r"debug_print\s*=\s*(true|false)") {
         Ok(r) => r,
         Err(_) => {
             eprintln!("ERROR:: Could not create regex!");
@@ -217,7 +218,7 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
         
         let size = i32::from_le_bytes(size_bytes_4);
 
-        if size > 512 {
+        if size as usize > BUFFER_SIZE {
             eprintln!("ERROR:: {} - Packet too large ({}), closing thread!", id, size);
             break;
         }
@@ -251,13 +252,9 @@ fn handle_client(stream: TcpStream, connections: SharedConnections, config: Serv
                     msg_times.pop_front();
                 } else { break; }
             }
-            if msg_sum >= config.max_rate { continue; }
+            if config.max_rate != 0 && msg_sum >= config.max_rate { continue; }
             msg_sum += size;
             msg_times.push_back((now, size));
-
-            if random_range(1..30) == 1 {
-                println!("{}", msg_sum);
-            }
         }
 
         { // broadcast
@@ -349,8 +346,8 @@ fn main() {
     // print config
     println!("INFO:: Listening on port {} with the following configuration:", config.port);
     println!("INFO:: Mirror        = {}", if config.mirror { "enabled" } else { "disabled" });
-    println!("INFO:: Max players   = {}", config.max_players);
-    println!("INFO:: Max byte rate = {}", config.max_rate);
+    println!("INFO:: Max players   = {}", if config.max_players == 0 { "unlimited".to_string() } else { config.max_players.to_string() });
+    println!("INFO:: Max byte rate = {}", if config.max_rate == 0 { "unlimited".to_string() } else { config.max_rate.to_string() });
     println!("INFO:: Debug logging = {}", if config.debug_print { "enabled" } else { "disabled" });
     println!();
 
@@ -384,7 +381,7 @@ fn main() {
                     }
                 };
 
-                if _connections.len() as i32 >= config.max_players { continue; }
+                if config.max_players != 0 && _connections.len() as i32 >= config.max_players { continue; }
 
                 let running_clone = Arc::clone(&running);
                 let connections_clone = Arc::clone(&connections);
